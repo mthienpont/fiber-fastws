@@ -19,7 +19,7 @@ type Config struct {
 }
 
 // New takes a fastws handler and upgrades the connection
-func New(handler func(fconn *Conn), config ...Config) fiber.Handler {
+func New(handler func(*Conn), config ...Config) fiber.Handler {
 	// Init config
 	var cfg Config
 	if len(config) > 0 {
@@ -46,13 +46,13 @@ func New(handler func(fconn *Conn), config ...Config) fiber.Handler {
 			conn.queries[string(key)] = string(value)
 		})
 		// upgrade
-		if err := fastws.Upgrade(func(fconn *fastws.Conn) {
+		upgrade := fastws.Upgrade(func(fconn *fastws.Conn) {
 			conn.Conn = fconn
 			defer releaseConn(conn)
 			handler(conn)
-		}); err != nil {
-			return fiber.ErrUpgradeRequired
-		}
+		})
+
+		upgrade(c.Context())
 
 		return nil
 	}
