@@ -4,11 +4,10 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/dgrr/fastws"
 	"github.com/gofiber/fiber/v2"
 )
 
-func wsHandler(conn *fastws.Conn) {
+func wsHandler(conn *Conn) {
 	fmt.Fprintf(conn, "Hello world")
 	var b []byte
 	for {
