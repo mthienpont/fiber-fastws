@@ -1,4 +1,4 @@
-module fiber-fastws
+module github.com/mthienpont/fiber-fastws
 
 go 1.15
 
