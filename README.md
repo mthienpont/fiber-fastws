@@ -11,7 +11,7 @@ go get -u github.com/mthienpont/fiber-fastws
 ## Example
 
 ```go
-package websocket
+package main
 
 import (
 	"fmt"
@@ -19,14 +19,16 @@ import (
 
 	"github.com/dgrr/fastws"
 	"github.com/gofiber/fiber/v2"
+  "github.com/mthienpont/fiber-fastws"
 )
 
-func asyncHandler(conn *Conn) {
+func asyncHandler(conn *websocket.Conn) {
 	dataChannel := make(chan []byte)
-
+  
+  var b []byte
 	go func() {
 		for {
-			_, msg, err := conn.ReadMessage(nil)
+			_, msg, err := conn.ReadMessage(b)
 			if err != nil {
 				log.Println("read:", err)
 				break
@@ -43,7 +45,7 @@ func asyncHandler(conn *Conn) {
 
 func main() {
 	app := fiber.New()
-	app.Get("/ws", New(asyncHandler))
+	app.Get("/ws", websocket.New(asyncHandler))
 
 	app.Listen(":3000") // ws://localhost:3000/ws
 }
