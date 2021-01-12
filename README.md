@@ -24,8 +24,8 @@ import (
 
 func asyncHandler(conn *websocket.Conn) {
 	dataChannel := make(chan []byte)
-  
   	var b []byte
+	
 	go func() {
 		for {
 			_, msg, err := conn.ReadMessage(b)
