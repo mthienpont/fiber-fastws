@@ -19,13 +19,13 @@ import (
 
 	"github.com/dgrr/fastws"
 	"github.com/gofiber/fiber/v2"
-  "github.com/mthienpont/fiber-fastws"
+  	"github.com/mthienpont/fiber-fastws"
 )
 
 func asyncHandler(conn *websocket.Conn) {
 	dataChannel := make(chan []byte)
   
-  var b []byte
+  	var b []byte
 	go func() {
 		for {
 			_, msg, err := conn.ReadMessage(b)
