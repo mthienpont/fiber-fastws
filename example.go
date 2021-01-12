@@ -28,28 +28,19 @@ func wsHandler(conn *Conn) {
 
 func asyncHandler(conn *Conn) {
 	dataChannel := make(chan []byte)
-	okChannel := make(chan bool)
 
-	go listenToIncoming(dataChannel, conn)
-	go echoReply(dataChannel, conn)
-
-	working := <-okChannel
-	log.Println(working)
-}
-
-func listenToIncoming(dataChannel chan []byte, conn *Conn) {
-	for {
-		_, msg, err := conn.ReadMessage(nil)
-		if err != nil {
-			log.Println("read:", err)
-			break
+	go func() {
+		for {
+			_, msg, err := conn.ReadMessage(nil)
+			if err != nil {
+				log.Println("read:", err)
+				break
+			}
+			log.Printf("recv: %s", msg)
+			dataChannel <- msg
 		}
-		log.Printf("recv: %s", msg)
-		dataChannel <- msg
-	}
-}
+	}()
 
-func echoReply(dataChannel chan []byte, conn *Conn) {
 	for data := range dataChannel {
 		conn.WriteMessage(fastws.ModeBinary, data)
 	}
