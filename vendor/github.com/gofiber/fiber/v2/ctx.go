@@ -6,6 +6,7 @@ package fiber
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -30,23 +31,28 @@ import (
 // maxParams defines the maximum number of parameters per route.
 const maxParams = 30
 
+const queryTag = "query"
+
 // Ctx represents the Context which hold the HTTP request and response.
 // It has methods for the request query string, parameters, body, HTTP headers and so on.
 type Ctx struct {
-	app          *App                 // Reference to *App
-	route        *Route               // Reference to *Route
-	indexRoute   int                  // Index of the current route
-	indexHandler int                  // Index of the current handler
-	method       string               // HTTP method
-	methodINT    int                  // HTTP method INT equivalent
-	baseURI      string               // HTTP base uri
-	path         string               // Prettified HTTP path -> string copy from pathBuffer
-	pathBuffer   []byte               // Prettified HTTP path buffer
-	treePath     string               // Path for the search in the tree
-	pathOriginal string               // Original HTTP path
-	values       [maxParams]string    // Route parameter values
-	fasthttp     *fasthttp.RequestCtx // Reference to *fasthttp.RequestCtx
-	matched      bool                 // Non use route matched
+	app                 *App                 // Reference to *App
+	route               *Route               // Reference to *Route
+	indexRoute          int                  // Index of the current route
+	indexHandler        int                  // Index of the current handler
+	method              string               // HTTP method
+	methodINT           int                  // HTTP method INT equivalent
+	baseURI             string               // HTTP base uri
+	path                string               // HTTP path with the modifications by the configuration -> string copy from pathBuffer
+	pathBuffer          []byte               // HTTP path buffer
+	detectionPath       string               // Route detection path                                  -> string copy from detectionPathBuffer
+	detectionPathBuffer []byte               // HTTP detectionPath buffer
+	treePath            string               // Path for the search in the tree
+	pathOriginal        string               // Original HTTP path
+	values              [maxParams]string    // Route parameter values
+	fasthttp            *fasthttp.RequestCtx // Reference to *fasthttp.RequestCtx
+	matched             bool                 // Non use route matched
+	userContext         context.Context
 }
 
 // Range data for c.Range
@@ -88,17 +94,16 @@ func (app *App) AcquireCtx(fctx *fasthttp.RequestCtx) *Ctx {
 	// Reset matched flag
 	c.matched = false
 	// Set paths
-	c.pathBuffer = append(c.pathBuffer[0:0], fctx.URI().PathOriginal()...)
-	c.pathOriginal = getString(fctx.URI().PathOriginal())
+	c.pathOriginal = app.getString(fctx.URI().PathOriginal())
 	// Set method
-	c.method = getString(fctx.Request.Header.Method())
+	c.method = app.getString(fctx.Request.Header.Method())
 	c.methodINT = methodInt(c.method)
 	// Attach *fasthttp.RequestCtx to ctx
 	c.fasthttp = fctx
 	// reset base uri
 	c.baseURI = ""
 	// Prettify path
-	c.prettifyPath()
+	c.configDependentPaths()
 	return c
 }
 
@@ -192,7 +197,7 @@ func (c *Ctx) Append(field string, values ...string) {
 	if len(values) == 0 {
 		return
 	}
-	h := getString(c.fasthttp.Response.Header.Peek(field))
+	h := c.app.getString(c.fasthttp.Response.Header.Peek(field))
 	originalH := h
 	for _, value := range values {
 		if len(h) == 0 {
@@ -213,7 +218,7 @@ func (c *Ctx) Attachment(filename ...string) {
 		fname := filepath.Base(filename[0])
 		c.Type(filepath.Ext(fname))
 
-		c.setCanonical(HeaderContentDisposition, `attachment; filename="`+quoteString(fname)+`"`)
+		c.setCanonical(HeaderContentDisposition, `attachment; filename="`+c.app.quoteString(fname)+`"`)
 		return
 	}
 	c.setCanonical(HeaderContentDisposition, "attachment")
@@ -240,6 +245,7 @@ func (c *Ctx) Body() []byte {
 // decoderPool helps to improve BodyParser's and QueryParser's performance
 var decoderPool = &sync.Pool{New: func() interface{} {
 	var decoder = schema.NewDecoder()
+	decoder.ZeroEmpty(true)
 	decoder.IgnoreUnknownKeys(true)
 	return decoder
 }}
@@ -305,6 +311,20 @@ func (c *Ctx) Context() *fasthttp.RequestCtx {
 	return c.fasthttp
 }
 
+// UserContext returns a context implementation that was set by
+// user earlier or returns a non-nil, empty context,if it was not set earlier.
+func (c *Ctx) UserContext() context.Context {
+	if c.userContext == nil {
+		c.userContext = context.Background()
+	}
+	return c.userContext
+}
+
+// SetUserContext sets a context implementation by user.
+func (c *Ctx) SetUserContext(ctx context.Context) {
+	c.userContext = ctx
+}
+
 // Cookie sets a cookie by passing a cookie struct.
 func (c *Ctx) Cookie(cookie *Cookie) {
 	fcookie := fasthttp.AcquireCookie()
@@ -336,7 +356,7 @@ func (c *Ctx) Cookie(cookie *Cookie) {
 // The returned value is only valid within the handler. Do not store any references.
 // Make copies or use the Immutable setting to use the value outside the Handler.
 func (c *Ctx) Cookies(key string, defaultValue ...string) string {
-	return defaultString(getString(c.fasthttp.Request.Header.Cookie(key)), defaultValue)
+	return defaultString(c.app.getString(c.fasthttp.Request.Header.Cookie(key)), defaultValue)
 }
 
 // Download transfers the file from path as an attachment.
@@ -350,7 +370,7 @@ func (c *Ctx) Download(file string, filename ...string) error {
 	} else {
 		fname = filepath.Base(file)
 	}
-	c.setCanonical(HeaderContentDisposition, `attachment; filename="`+quoteString(fname)+`"`)
+	c.setCanonical(HeaderContentDisposition, `attachment; filename="`+c.app.quoteString(fname)+`"`)
 	return c.SendFile(file)
 }
 
@@ -382,7 +402,7 @@ func (c *Ctx) Format(body interface{}) error {
 	case string:
 		b = val
 	case []byte:
-		b = getString(val)
+		b = c.app.getString(val)
 	default:
 		b = fmt.Sprintf("%v", val)
 	}
@@ -417,7 +437,7 @@ func (c *Ctx) FormFile(key string) (*multipart.FileHeader, error) {
 // Returned value is only valid within the handler. Do not store any references.
 // Make copies or use the Immutable setting instead.
 func (c *Ctx) FormValue(key string, defaultValue ...string) string {
-	return defaultString(getString(c.fasthttp.FormValue(key)), defaultValue)
+	return defaultString(c.app.getString(c.fasthttp.FormValue(key)), defaultValue)
 }
 
 // Fresh returns true when the response is still “fresh” in the client's cache,
@@ -446,16 +466,16 @@ func (c *Ctx) Fresh() bool {
 
 	// if-none-match
 	if noneMatch != "" && noneMatch != "*" {
-		var etag = getString(c.fasthttp.Response.Header.Peek(HeaderETag))
+		var etag = c.app.getString(c.fasthttp.Response.Header.Peek(HeaderETag))
 		if etag == "" {
 			return false
 		}
-		if isEtagStale(etag, getBytes(noneMatch)) {
+		if c.app.isEtagStale(etag, c.app.getBytes(noneMatch)) {
 			return false
 		}
 
 		if modifiedSince != "" {
-			var lastModified = getString(c.fasthttp.Response.Header.Peek(HeaderLastModified))
+			var lastModified = c.app.getString(c.fasthttp.Response.Header.Peek(HeaderLastModified))
 			if lastModified != "" {
 				lastModifiedTime, err := http.ParseTime(lastModified)
 				if err != nil {
@@ -477,14 +497,14 @@ func (c *Ctx) Fresh() bool {
 // Returned value is only valid within the handler. Do not store any references.
 // Make copies or use the Immutable setting instead.
 func (c *Ctx) Get(key string, defaultValue ...string) string {
-	return defaultString(getString(c.fasthttp.Request.Header.Peek(key)), defaultValue)
+	return defaultString(c.app.getString(c.fasthttp.Request.Header.Peek(key)), defaultValue)
 }
 
 // Hostname contains the hostname derived from the Host HTTP header.
 // Returned value is only valid within the handler. Do not store any references.
 // Make copies or use the Immutable setting instead.
 func (c *Ctx) Hostname() string {
-	return getString(c.fasthttp.Request.URI().Host())
+	return c.app.getString(c.fasthttp.Request.URI().Host())
 }
 
 // IP returns the remote IP address of the request.
@@ -506,10 +526,10 @@ func (c *Ctx) IPs() (ips []string) {
 	for {
 		commaPos = bytes.IndexByte(header, ',')
 		if commaPos != -1 {
-			ips[i] = utils.Trim(getString(header[:commaPos]), ' ')
+			ips[i] = utils.Trim(c.app.getString(header[:commaPos]), ' ')
 			header, i = header[commaPos+1:], i+1
 		} else {
-			ips[i] = utils.Trim(getString(header), ' ')
+			ips[i] = utils.Trim(c.app.getString(header), ' ')
 			return
 		}
 	}
@@ -535,7 +555,7 @@ func (c *Ctx) Is(extension string) bool {
 // and a nil slice encodes as the null JSON value.
 // This method also sets the content header to application/json.
 func (c *Ctx) JSON(data interface{}) error {
-	raw, err := json.Marshal(data)
+	raw, err := c.app.config.JSONEncoder(data)
 	if err != nil {
 		return err
 	}
@@ -562,7 +582,7 @@ func (c *Ctx) JSONP(data interface{}, callback ...string) error {
 		cb = "callback"
 	}
 
-	result = cb + "(" + getString(raw) + ");"
+	result = cb + "(" + c.app.getString(raw) + ");"
 
 	c.setCanonical(HeaderXContentTypeOptions, "nosniff")
 	c.fasthttp.Response.Header.SetContentType(MIMEApplicationJavaScriptCharsetUTF8)
@@ -584,7 +604,7 @@ func (c *Ctx) Links(link ...string) {
 			_, _ = bb.WriteString(`; rel="` + link[i] + `",`)
 		}
 	}
-	c.setCanonical(HeaderLink, utils.TrimRight(getString(bb.Bytes()), ','))
+	c.setCanonical(HeaderLink, utils.TrimRight(c.app.getString(bb.Bytes()), ','))
 	bytebufferpool.Put(bb)
 }
 
@@ -642,7 +662,7 @@ func (c *Ctx) Next() (err error) {
 // Returned value is only valid within the handler. Do not store any references.
 // Make copies or use the Immutable setting to use the value outside the Handler.
 func (c *Ctx) OriginalURL() string {
-	return getString(c.fasthttp.Request.Header.RequestURI())
+	return c.app.getString(c.fasthttp.Request.Header.RequestURI())
 }
 
 // Params is used to get the route parameters.
@@ -669,22 +689,27 @@ func (c *Ctx) Params(key string, defaultValue ...string) string {
 	return defaultString("", defaultValue)
 }
 
+// ParamsInt is used to get an integer from the route parameters
+// it defaults to zero if the parameter is not found or if the
+// parameter cannot be converted to an integer
+func (c *Ctx) ParamsInt(key string) (int, error) {
+	// Use Atoi to convert the param to an int or return zero and an error
+	return strconv.Atoi(c.Params(key))
+}
+
 // Path returns the path part of the request URL.
 // Optionally, you could override the path.
 func (c *Ctx) Path(override ...string) string {
 	if len(override) != 0 && c.path != override[0] {
 		// Set new path to context
-		c.pathBuffer = append(c.pathBuffer[0:0], override[0]...)
 		c.pathOriginal = override[0]
-		// c.path = override[0]
-		// c.pathOriginal = c.path
 
 		// Set new path to request context
 		c.fasthttp.Request.URI().SetPath(c.pathOriginal)
 		// Prettify path
-		c.prettifyPath()
+		c.configDependentPaths()
 	}
-	return c.pathOriginal
+	return c.path
 }
 
 // Protocol contains the request protocol string: http or https for TLS requests.
@@ -698,14 +723,14 @@ func (c *Ctx) Protocol() string {
 			return // X-Forwarded-
 		} else if bytes.HasPrefix(key, []byte("X-Forwarded-")) {
 			if bytes.Equal(key, []byte(HeaderXForwardedProto)) {
-				scheme = getString(val)
+				scheme = c.app.getString(val)
 			} else if bytes.Equal(key, []byte(HeaderXForwardedProtocol)) {
-				scheme = getString(val)
+				scheme = c.app.getString(val)
 			} else if bytes.Equal(key, []byte(HeaderXForwardedSsl)) && bytes.Equal(val, []byte("on")) {
 				scheme = "https"
 			}
 		} else if bytes.Equal(key, []byte(HeaderXUrlScheme)) {
-			scheme = getString(val)
+			scheme = c.app.getString(val)
 		}
 	})
 	return scheme
@@ -717,7 +742,7 @@ func (c *Ctx) Protocol() string {
 // Returned value is only valid within the handler. Do not store any references.
 // Make copies or use the Immutable setting to use the value outside the Handler.
 func (c *Ctx) Query(key string, defaultValue ...string) string {
-	return defaultString(getString(c.fasthttp.QueryArgs().Peek(key)), defaultValue)
+	return defaultString(c.app.getString(c.fasthttp.QueryArgs().Peek(key)), defaultValue)
 }
 
 // QueryParser binds the query string to a struct.
@@ -727,7 +752,7 @@ func (c *Ctx) QueryParser(out interface{}) error {
 	defer decoderPool.Put(decoder)
 
 	// Set correct alias tag
-	decoder.SetAliasTag("query")
+	decoder.SetAliasTag(queryTag)
 
 	data := make(map[string][]string)
 	c.fasthttp.QueryArgs().VisitAll(func(key []byte, val []byte) {
@@ -749,6 +774,7 @@ func (c *Ctx) QueryParser(out interface{}) error {
 func equalFieldType(out interface{}, kind reflect.Kind, key string) bool {
 	// Get type of interface
 	outTyp := reflect.TypeOf(out).Elem()
+	key = utils.ToLower(key)
 	// Must be a struct to match a field
 	if outTyp.Kind() != reflect.Struct {
 		return false
@@ -772,9 +798,11 @@ func equalFieldType(out interface{}, kind reflect.Kind, key string) bool {
 			continue
 		}
 		// Get tag from field if exist
-		inputFieldName := typeField.Tag.Get(key)
+		inputFieldName := typeField.Tag.Get(queryTag)
 		if inputFieldName == "" {
 			inputFieldName = typeField.Name
+		} else {
+			inputFieldName = strings.Split(inputFieldName, ",")[0]
 		}
 		// Compare field/tag with provided key
 		if utils.ToLower(inputFieldName) == key {
@@ -871,7 +899,7 @@ func (c *Ctx) Render(name string, bind interface{}, layouts ...string) error {
 			return err
 		}
 		// Parse template
-		if tmpl, err = template.New("").Parse(getString(buf.Bytes())); err != nil {
+		if tmpl, err = template.New("").Parse(c.app.getString(buf.Bytes())); err != nil {
 			return err
 		}
 		buf.Reset()
@@ -1105,24 +1133,33 @@ func (c *Ctx) XHR() bool {
 	return utils.EqualFoldBytes(utils.UnsafeBytes(c.Get(HeaderXRequestedWith)), []byte("xmlhttprequest"))
 }
 
-// prettifyPath ...
-func (c *Ctx) prettifyPath() {
-	// If UnescapePath enabled, we decode the path
+// configDependentPaths set paths for route recognition and prepared paths for the user,
+// here the features for caseSensitive, decoded paths, strict paths are evaluated
+func (c *Ctx) configDependentPaths() {
+	c.pathBuffer = append(c.pathBuffer[0:0], c.pathOriginal...)
+	// If UnescapePath enabled, we decode the path and save it for the framework user
 	if c.app.config.UnescapePath {
 		c.pathBuffer = fasthttp.AppendUnquotedArg(c.pathBuffer[:0], c.pathBuffer)
 	}
+	c.path = c.app.getString(c.pathBuffer)
+
+	// another path is specified which is for routing recognition only
+	// use the path that was changed by the previous configuration flags
+	c.detectionPathBuffer = append(c.detectionPathBuffer[0:0], c.pathBuffer...)
 	// If CaseSensitive is disabled, we lowercase the original path
 	if !c.app.config.CaseSensitive {
-		c.pathBuffer = utils.ToLowerBytes(c.pathBuffer)
+		c.detectionPathBuffer = utils.ToLowerBytes(c.detectionPathBuffer)
 	}
 	// If StrictRouting is disabled, we strip all trailing slashes
-	if !c.app.config.StrictRouting && len(c.pathBuffer) > 1 && c.pathBuffer[len(c.pathBuffer)-1] == '/' {
-		c.pathBuffer = utils.TrimRightBytes(c.pathBuffer, '/')
+	if !c.app.config.StrictRouting && len(c.detectionPathBuffer) > 1 && c.detectionPathBuffer[len(c.detectionPathBuffer)-1] == '/' {
+		c.detectionPathBuffer = utils.TrimRightBytes(c.detectionPathBuffer, '/')
 	}
-	c.path = getString(c.pathBuffer)
+	c.detectionPath = c.app.getString(c.detectionPathBuffer)
 
+	// Define the path for dividing routes into areas for fast tree detection, so that fewer routes need to be traversed,
+	// since the first three characters area select a list of routes
 	c.treePath = c.treePath[0:0]
-	if len(c.path) >= 3 {
-		c.treePath = c.path[:3]
+	if len(c.detectionPath) >= 3 {
+		c.treePath = c.detectionPath[:3]
 	}
 }
