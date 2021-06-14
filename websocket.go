@@ -19,7 +19,7 @@ type Config struct {
 }
 
 // New takes a fastws handler and upgrades the connection
-func New(handler func(*Conn), config ...Config) func(c *fiber.Ctx) {
+func New(handler func(*Conn), config ...Config) fiber.Handler {
 	// Init config
 	var cfg Config
 	if len(config) > 0 {
@@ -35,7 +35,7 @@ func New(handler func(*Conn), config ...Config) func(c *fiber.Ctx) {
 	// 	Compress:  cfg.EnableCompression,
 	// }
 
-	return func(c *fiber.Ctx) {
+	return func(c *fiber.Ctx) error {
 		conn := acquireConn()
 		// locals
 		c.Context().VisitUserValues(func(key []byte, value interface{}) {
@@ -53,6 +53,8 @@ func New(handler func(*Conn), config ...Config) func(c *fiber.Ctx) {
 		})
 
 		upgrade(c.Context())
+
+		return nil
 	}
 }
 
