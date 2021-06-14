@@ -4,7 +4,7 @@
 
 Lightweight wrapper for the `dgrr/fastws` library for Fiber.
 
-```go
+```
 go get -u github.com/mthienpont/fiber-fastws
 ```
 
@@ -14,18 +14,16 @@ go get -u github.com/mthienpont/fiber-fastws
 package main
 
 import (
-	"fmt"
 	"log"
 
-	"github.com/dgrr/fastws"
 	"github.com/gofiber/fiber/v2"
-  	"github.com/mthienpont/fiber-fastws"
+	"github.com/mthienpont/fiber-fastws"
 )
 
 func asyncHandler(conn *websocket.Conn) {
 	dataChannel := make(chan []byte)
-  	var b []byte
-	
+	var b []byte
+
 	go func() {
 		for {
 			_, msg, err := conn.ReadMessage(b)
@@ -39,7 +37,7 @@ func asyncHandler(conn *websocket.Conn) {
 	}()
 
 	for data := range dataChannel {
-		conn.WriteMessage(fastws.ModeBinary, data)
+		conn.WriteMessage(1, data)
 	}
 }
 
