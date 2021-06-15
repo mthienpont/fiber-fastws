@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/dgrr/fastws"
 	"github.com/gofiber/fiber/v2"
 )
 
@@ -41,7 +42,7 @@ func asyncHandler(conn *Conn) {
 	}()
 
 	for data := range dataChannel {
-		conn.WriteMessage(1, data)
+		conn.WriteMessage(fastws.ModeBinary, data)
 	}
 }
 
